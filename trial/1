@@ -1,0 +1,213 @@
+#!/bin/bash
+
+working_dir=`pwd`
+
+echo "Welcome to LoadTest Setup"
+echo ""
+
+userOption=true
+
+while $userOption; do
+
+read -p "Do you want to run Single-Region Test (or) Multi-Region Test [S/M]: " testStatus
+
+        if [ $testStatus == 'S' ]; then
+		read -p "Please Name your cluster: " clusterName
+
+		### User Selecting Region and Zones ###
+		echo "Available Regions in US"
+		echo "us-central1 | us-east1 | us-east4 | us-west1 | us-west2"
+  		read -p "Select the Region: " regionSelect
+  		case $regionSelect in
+   				us-central1)
+                			echo "Available Zones in $regionSelect"
+                			echo "us-central1-a | us-central1-b | us-central1-c | us-central1-f"
+                			read -p "Select anyone Zone for the cluster: " zoneSelect
+                			;;
+       				us-east1)
+               				echo "Available Zones $regionSelect"
+			                echo "us-east1-b | us-east1-c | us-east1-d"
+			                read -p "Select anyone Zone for the cluster: " zoneSelect
+			                ;;
+			        us-east4)
+			                echo "Available Zones $regionSelect"
+			                echo "us-east4-a | us-east4-b | us-east4-c"
+			                read -p "Select anyone Zone for the cluster: " zoneSelect
+			                ;;
+			        us-west1)
+			                echo "Available Zones $regionSelect"
+			                echo "us-west1-a | us-west1-b | us-west1-c"
+			                read -p "Select anyone Zone for the cluster: " zoneSelect
+			                ;;
+				us-west2)	
+			                echo "Available Zones $regionSelect"
+			                echo "us-west2-a | us-west2-b | us-west2-c"
+			                read -p "Select anyone Zone for the cluster: " zoneSelect
+			                ;;
+			        *)
+			                echo "You Entered Wrong Input. Please Try Again.."
+			                ;;
+				esac
+
+		echo "$clusterName,$zoneSelect">cluster.csv
+
+		echo "Hi, FYI: We are Creating the cluster with Default Values [DB-Node(1-Grafana pod, 1-Influx pod), Master-Node(1-Master pod), Slave-Node(3-Slave pods)"
+		###Creating Cluster in GKE with Default Values###
+
+		gcloud container clusters create $clusterName --zone $zoneSelect --num-nodes=1
+
+		gcloud container node-pools delete default-pool --cluster $clusterName --zone $zoneSelect
+
+		gcloud container node-pools create grafana-influx --cluster $clusterName --zone $zoneSelect --machine-type=n1-standard-4 --image-type=ubuntu --node-labels=type=storage-and-monitoring --num-nodes=1
+
+		gcloud container node-pools create master --cluster $clusterName --zone $zoneSelect --machine-type=n1-standard-2 --image-type=ubuntu --node-labels=type=master --num-nodes=1
+
+		gcloud container node-pools create slave --cluster $clusterName --zone $zoneSelect --machine-type=n1-standard-16 --image-type=ubuntu --node-labels=type=slave --num-nodes=1
+
+		###Connecting with the Newly Created Cluster###
+
+		gcloud container clusters get-credentials $clusterName --zone $zoneSelect --project etsyperftesting-208619
+
+		tenant=$clusterName
+
+		kubectl create namespace $tenant
+
+		###Creating Slave from YAML files###
+		kubectl create -n $tenant -f $working_dir/jmeter_slaves_deploy.yaml
+
+		kubectl create -n $tenant -f $working_dir/jmeter_slaves_svc.yaml
+
+		###Creating Master from YAML files###
+		kubectl create -n $tenant -f $working_dir/jmeter_master_configmap.yaml
+
+		kubectl create -n $tenant -f $working_dir/jmeter_master_deploy.yaml
+
+		###Creating InfluxDB from YAML files###
+		kubectl create -n $tenant -f $working_dir/jmeter_influxdb_configmap.yaml
+
+		kubectl create -n $tenant -f $working_dir/jmeter_influxdb_configmap.yaml
+
+		kubectl create -n $tenant -f $working_dir/jmeter_influxdb_deploy.yaml
+
+		kubectl create -n $tenant -f $working_dir/jmeter_influxdb_svc.yaml
+
+		###Creating Grafana from YAML files###
+		kubectl create -n $tenant -f $working_dir/jmeter_grafana_deploy.yaml
+
+		kubectl create -n $tenant -f $working_dir/jmeter_grafana_svc.yaml
+
+		echo namespace = $tenant > $working_dir/tenant_export
+
+		sleep 30
+
+		###Creating Jmeter DB in Influx###
+		influxdb_pod=`kubectl get po -n $tenant | grep influxdb-jmeter | awk '{print $1}'`
+		kubectl exec -ti -n $tenant $influxdb_pod -- influx -execute 'CREATE DATABASE jmeter'
+
+		## Create the influxdb datasource in Grafana
+		echo "Creating the Influxdb data source"
+		grafana_pod=`kubectl get po -n $tenant | grep jmeter-grafana | awk '{print $1}'`
+
+		kubectl exec -ti -n $tenant $grafana_pod -- curl 'http://admin:admin@127.0.0.1:3000/api/datasources' -X POST -H 'Content-Type: application/json;charset=UTF-8' --data-binary '{"name":"jmeterdb","type":"influxdb","url":"http://jmeter-influxdb:8086","access":"proxy","isDefault":true,"database":"jmeter","user":"admin","password":"admin"}'
+
+		###Applying MountPaths in Master Pod###
+		master_pod=`kubectl get po -n $tenant | grep jmeter-master | awk '{print $1}'`
+		kubectl exec -ti -n $tenant $master_pod -- cp  /load_test  /jmeter/load_test
+
+		kubectl exec -ti -n $tenant $master_pod -- chmod 755 /jmeter/load_test
+
+		sleep 20
+
+		validateFile () {
+		        if [ -f $1 ];then
+                		return 0
+		        else
+                	echo "file not exists";
+		                exit 1
+		        fi
+		}
+
+		files=true;
+
+		while $files; do
+
+		echo " Enter the file in the current directory or if the file is in other directory, then please enter the file with absolute path"
+
+		read -p "Enter jmx file : " jmxFile
+		validateFile $jmxFile
+		
+		csvOption=true;
+		read -p "You want to pass csv file [y/n] " csvStatus
+
+			if [ $csvStatus == 'y' ];then
+        			read -p "Does this JMX need Single or Multiple CSV files [S/M]: " csvFile
+          				 if [ $csvFile == 'S' ]; then
+                 				read -p "Enter csv file : " csv
+                 				validateFile $csv
+          				 elif [ $csvFile == 'M' ]; then
+        	          			 echo "you selected multi file"
+#                 csv=true
+#                 while $csv; do
+#                read -p "Enter CSV file : " jmxFile
+#                 validateFile $jmxFile
+#                mkdir -p csv
+#                csvDirectory=csv
+#                cp -rf $jmxFile $csvDirectory
+#
+#                read -p "Enter another CSV file [y/n] " status
+#                 if [ $status ];then
+#                     if [ $status == 'y' ]; then
+#                        csv=true;
+#                     elif [ $status == 'n' ]; then
+#                        csv=false;
+         				else
+           				echo  "Enter a valid response S or M ";
+	          				 csvOption=true;
+          				fi
+			elif [ $csvStatus == 'n' ];then
+        			csv="NoCSV"
+			else
+   			echo  "Enter a valid response S or M ";
+   				csvOption=true;
+			fi
+
+		echo $jmxFile,$csv >>mapper.csv
+
+		done
+
+		###Copy Progress initiated###
+                echo " Files are being copied..."
+		copy=`cat mapper.csv`
+		jmx=`echo $copy | awk -F ',' '{ print $1 }'`
+		csv=`echo $copy | awk -F ',' '{ print $2 }'`
+		master_pod=`kubectl get po -n $tenant | grep jmeter-master | awk '{print $1}'`
+                kubectl exec -it -n $tenant $master_pod -- bash -c "echo 35.227.203.198 www.etsy.com etsy.com openapi.etsy.com api.etsy.com >> /etc/hosts"
+		kubectl cp $jmx -n $tenant $master_pod:/$jmx
+		slave_pod=`kubectl get po -n $tenant | grep jmeter-slave | awk '{print $1}'`
+		for i in $slave_pod
+		do
+		kubectl exec -ti -n $tenant $i -- mkdir -p /jmeter/apache-jmeter-4.0/bin/csv/
+		kubectl cp $csv -n $tenant $i:/jmeter/apache-jmeter-4.0/bin/csv/$csv
+		kubectl exec -it -n $tenant $i -- bash -c "echo 35.227.203.198 www.etsy.com etsy.com openapi.etsy.com api.etsy.com >> /etc/hosts"
+		done
+
+		###Test Ready###
+		read -p " Your Test is ready.. Press Y to start and N to exit [y/n]: " startStatus
+        		if [ $startStatus == 'y' ]; then
+                		kubectl exec -it -n $tenant $master_pod -- /jmeter/load_test $jmx &
+       			elif [ $startStatus == 'n' ]; then
+	                	exit 1;
+        		else
+				echo  "Enter a valid response y or n ";
+			fi
+        elif [ $testStatus == 'M' ]; then
+                echo "somelines"
+		exit 1
+        else
+	   echo  "Enter a valid response S or M:  "
+  		 userOption=true;
+	fi
+done
+###Stop the test###
+#kubectl -n $tenant exec -ti $master_pod bash /jmeter/apache-jmeter-4.0/bin/stoptest.sh
+

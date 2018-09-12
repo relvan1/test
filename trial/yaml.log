@@ -1,0 +1,10 @@
+deployment.apps/jmeter-slaves created
+service/jmeter-slaves-svc created
+configmap/jmeter-load-test created
+deployment.apps/jmeter-master created
+configmap/influxdb-config created
+deployment.apps/influxdb-jmeter created
+service/jmeter-influxdb created
+deployment.extensions/jmeter-grafana created
+service/jmeter-grafana created
+{"datasource":{"id":1,"orgId":1,"name":"jmeterdb","type":"influxdb","typeLogoUrl":"","access":"proxy","url":"http://jmeter-influxdb:8086","password":"admin","user":"admin","database":"jmeter","basicAuth":false,"basicAuthUser":"","basicAuthPassword":"","withCredentials":false,"isDefault":true,"secureJsonFields":{},"version":1,"readOnly":false},"id":1,"message":"Datasource added","name":"jmeterdb"}
